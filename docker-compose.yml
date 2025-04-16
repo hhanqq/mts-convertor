@@ -4,13 +4,13 @@ services:
     environment:
       POSTGRES_USER: root
       POSTGRES_PASSWORD: 12345
-      POSTGRES_DB: mts-db
+      POSTGRES_DB: mts-db-1
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U root -d test_postg-db-1"]
+      test: ["CMD-SHELL", "pg_isready -U root -d mts-db"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -34,7 +34,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://root:12345@db:5432/mts-db?client_encoding=utf8
+      DATABASE_URL: postgresql://root:12345@db:5432/mts-db-1?client_encoding=utf8
     volumes:
       - .:/app
 

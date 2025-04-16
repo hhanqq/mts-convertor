@@ -1,15 +1,20 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from io import BytesIO
+
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm
 from typing import Annotated
-from datetime import timedelta
+from datetime import timedelta, datetime
 import uvicorn
 from sqlalchemy.orm import Session
 
 import logging
 
+from fastapi.responses import StreamingResponse
 
+from app.models.pdf import PDFFile
 from app.models.user import User
 from app.database import Base, engine, get_db
+from app.schemas.pdf_resp import PDFResponse
 from app.schemas.user import UserCreate, UserOut
 from app.schemas.token import Token
 from app.authorization.auth_user import (
@@ -99,6 +104,77 @@ async def get_users(
 ):
     users = db.query(User).all()
     return users
+
+
+@app.post("/upload-pdf/", response_model=PDFResponse)
+async def upload_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    # Проверка типа файла
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+    try:
+        # Чтение файла
+        contents = await file.read()
+        file_size = len(contents)
+
+        # Подготовка данных для сохранения
+        db_pdf = PDFFile(
+            filename=file.filename,
+            content=contents,
+            upload_date=datetime.now().isoformat(),
+            file_size=file_size
+        )
+
+        # Сохранение в базу
+        db.add(db_pdf)
+        db.commit()
+        db.refresh(db_pdf)
+
+        # Формирование ответа
+        response_data = {
+            "id": db_pdf.id,
+            "filename": db_pdf.filename,
+            "upload_date": db_pdf.upload_date,
+            "file_size": db_pdf.file_size
+        }
+
+        return response_data
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error saving PDF: {str(e)}")
+
+
+
+@app.get("/pdf-info/{pdf_id}", response_model=PDFResponse)
+async def get_pdf_info(pdf_id: int, db: Session = Depends(get_db)):
+    pdf_file = db.query(PDFFile).get(pdf_id)
+    if not pdf_file:
+        raise HTTPException(status_code=404, detail="PDF не найден")
+    return StreamingResponse(
+        BytesIO(pdf_file.content),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename={pdf_file.filename}"}
+    )
+
+
+
+
+@app.delete("/pdf/{pdf_id}")
+async def delete_pdf(pdf_id: int, db: Session = Depends(get_db)):
+    try:
+        pdf_file = db.query(PDFFile).filter(PDFFile.id == pdf_id).first()
+
+        if not pdf_file:
+            raise HTTPException(status_code=404, detail="PDF not found")
+
+        db.delete(pdf_file)
+        db.commit()
+
+        return {"message": "PDF deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 if __name__ == "__main__":

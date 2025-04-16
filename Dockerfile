@@ -26,5 +26,4 @@ ENV LC_ALL=C.UTF-8
 
 # Команда запуска (используем python -m)
 CMD ["sh", "-c", "while ! nc -z db 5432; do sleep 1; done && \
-     python -m alembic upgrade head && \
      python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"]
