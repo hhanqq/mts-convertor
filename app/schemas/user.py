@@ -13,7 +13,7 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str = Field(..., min_length=8, example="megaparol123")
     surname: Optional[str] = Field(None, max_length=50, example="Sergeevich")
-    tg_id: str = Field(..., example="123456789")
+    tg_id: str = Field(..., example="@mega_tg_id")
     disabled: bool = Field(False)
 
 
