@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 import logging
 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 
 from app.models.pdf import PDFFile
 from app.models.user import User
@@ -17,6 +17,7 @@ from app.database import Base, engine, get_db
 from app.schemas.pdf_resp import PDFResponse
 from app.schemas.user import UserCreate, UserOut
 from app.schemas.token import Token
+from app.pdf_handlers.pdf_reader_camelot_plumber import process_pdf_to_html
 from app.authorization.auth_user import (
     authenticate_user,
     create_access_token,
@@ -157,6 +158,37 @@ async def get_pdf_info(pdf_id: int, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/pdf/redactor/{pdf_str}", response_class=HTMLResponse)
+async def get_pdf_for_redactor(pdf_str: str, db: Session = Depends(get_db)):
+    """
+    Получает PDF по ID из базы данных и конвертирует в HTML
+    """
+    try:
+        pdf_record = db.query(PDFFile).filter(PDFFile.filename == pdf_str).first()
+
+        if not pdf_record:
+            raise HTTPException(status_code=404, detail="PDF not found")
+
+        if not pdf_record.content:
+            raise HTTPException(status_code=404, detail="PDF content is empty")
+
+        html_content = process_pdf_to_html(pdf_record.content)
+
+        return HTMLResponse(content=html_content)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing PDF: {str(e)}"
+        )
+
+
+@app.get("/pdf/all", response_model=list[PDFResponse])
+async def get_all_pdf(db: Session = Depends(get_db)):
+    pdfs = db.query(PDFFile).all()
+    return pdfs
 
 
 @app.delete("/pdf/{pdf_id}")
