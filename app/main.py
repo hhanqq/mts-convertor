@@ -1,5 +1,7 @@
 from io import BytesIO
 
+import camelot
+import pdfplumber
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm
 from typing import Annotated
@@ -17,7 +19,7 @@ from app.database import Base, engine, get_db
 from app.schemas.pdf_resp import PDFResponse
 from app.schemas.user import UserCreate, UserOut
 from app.schemas.token import Token
-from app.pdf_handlers.pdf_reader_camelot_plumber import process_pdf_to_html
+# from app.pdf_handlers.pdf_reader_camelot_plumber import process_pdf_to_html
 from app.authorization.auth_user import (
     authenticate_user,
     create_access_token,
@@ -160,19 +162,81 @@ async def get_pdf_info(pdf_id: int, db: Session = Depends(get_db)):
 
 @app.get("/pdf/redactor/{pdf_str}", response_class=HTMLResponse)
 async def get_pdf_for_redactor(pdf_str: str, db: Session = Depends(get_db)):
-    """
-    Получает PDF по ID из базы данных и конвертирует в HTML
-    """
     try:
         pdf_record = db.query(PDFFile).filter(PDFFile.filename == pdf_str).first()
-
         if not pdf_record:
             raise HTTPException(status_code=404, detail="PDF not found")
-
         if not pdf_record.content:
             raise HTTPException(status_code=404, detail="PDF content is empty")
 
-        html_content = process_pdf_to_html(pdf_record.content)
+        html_content = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>PDF Conversion</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.5; }
+                table { border-collapse: collapse; margin: 20px 0; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                th { background-color: #f2f2f2; }
+                .page { page-break-after: always; margin-bottom: 50px; }
+                .page-number { font-weight: bold; margin-top: 20px; }
+                .text-content { margin: 10px 0; }
+            </style>
+        </head>
+        <body>
+        """
+
+        pdf_file = BytesIO(pdf_record.content)
+
+        with pdfplumber.open(pdf_file) as pdf:
+            for page_num, page in enumerate(pdf.pages, start=1):
+                html_content += f'<div class="page" id="page-{page_num}">'
+                html_content += f'<div class="page-number">Page {page_num}</div>'
+
+                page_width = page.width
+                page_height = page.height
+
+                tables = camelot.read_pdf(pdf_file, pages=str(page_num), flavor='lattice')
+
+                table_bboxes = []
+                for table in tables:
+                    x1, y1, x2, y2 = table._bbox
+                    bbox = (x1, page_height - y2, x2, page_height - y1)
+                    table_bboxes.append(bbox)
+
+                    html_content += '<table>'
+                    for row in table.data:
+                        html_content += '<tr>'
+                        for cell in row:
+                            html_content += f'<td>{cell}</td>'
+                        html_content += '</tr>'
+                    html_content += '</table>'
+
+                words = page.extract_words()
+                if words:
+                    filtered_words = []
+                    for word in words:
+                        word_bbox = (word['x0'], word['top'], word['x1'], word['bottom'])
+                        in_table = False
+                        for table_bbox in table_bboxes:
+                            if bbox_overlap(word_bbox, table_bbox):
+                                in_table = True
+                                break
+                        if not in_table:
+                            filtered_words.append(word)
+
+                    if filtered_words:
+                        formatted_text = format_text(filtered_words)
+                        html_content += f'<div class="text-content">{formatted_text}</div>'
+
+                html_content += '</div>'
+
+        html_content += """
+        </body>
+        </html>
+        """
 
         return HTMLResponse(content=html_content)
 
@@ -183,6 +247,57 @@ async def get_pdf_for_redactor(pdf_str: str, db: Session = Depends(get_db)):
             status_code=500,
             detail=f"Error processing PDF: {str(e)}"
         )
+
+
+def bbox_overlap(bbox1, bbox2):
+    """Проверяет пересекаются ли два bounding box"""
+    x1_1, y1_1, x2_1, y2_1 = bbox1
+    x1_2, y1_2, x2_2, y2_2 = bbox2
+
+    # Проверка на пересечение по x и y
+    overlap_x = x1_1 < x2_2 and x2_1 > x1_2
+    overlap_y = y1_1 < y2_2 and y2_1 > y1_2
+
+    return overlap_x and overlap_y
+
+
+def format_text(words):
+    """Форматирует список слов в читаемый текст"""
+    words = sorted(words, key=lambda w: (w['top'], w['x0']))
+
+    lines = []
+    current_line = []
+    current_top = None
+
+    for word in words:
+        if current_top is None or abs(word['top'] - current_top) < 5:
+            current_line.append(word)
+            current_top = word['top']
+        else:
+            lines.append(format_line(current_line))
+            current_line = [word]
+            current_top = word['top']
+
+    if current_line:
+        lines.append(format_line(current_line))
+
+    return "<br>".join(lines)
+
+
+def format_line(words):
+    """Форматирует строку текста"""
+    line_text = ""
+    prev_x1 = None
+
+    for word in sorted(words, key=lambda w: w['x0']):
+        if prev_x1 and word['x0'] - prev_x1 > 10:
+            line_text += "    "
+        elif prev_x1:
+            line_text += " "
+        line_text += word['text']
+        prev_x1 = word['x1']
+
+    return line_text
 
 
 @app.get("/pdf/all", response_model=list[PDFResponse])

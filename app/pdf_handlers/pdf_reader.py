@@ -1,3 +1,5 @@
+# === FOR TEST REAL HANDLER IN MAIN.APP ===
+
 import pdfplumber
 import json
 
