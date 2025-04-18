@@ -12,10 +12,13 @@ from sqlalchemy.orm import Session
 import logging
 
 from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 
+from app.models.html import HTMLFile
 from app.models.pdf import PDFFile
 from app.models.user import User
 from app.database import Base, engine, get_db
+from app.schemas.html_resp import HTMLFileCreate, HTMLFileResponse
 from app.schemas.pdf_resp import PDFResponse
 from app.schemas.user import UserCreate, UserOut
 from app.schemas.token import Token
@@ -36,6 +39,14 @@ Base.metadata.create_all(bind=engine)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 
 
@@ -62,10 +73,10 @@ async def register(
     hashed_password = get_password_hash(user_data.password)
     db_user = User(
         email=user_data.email,
+        hashed_password=hashed_password,
         first_name=user_data.first_name,
         last_name=user_data.last_name,
         surname=user_data.surname,
-        hashed_password=hashed_password,
         tg_id=user_data.tg_id,
         disabled=user_data.disabled
     )
@@ -162,6 +173,7 @@ async def get_pdf_info(pdf_id: int, db: Session = Depends(get_db)):
 
 @app.get("/pdf/redactor/{pdf_str}", response_class=HTMLResponse)
 async def get_pdf_for_redactor(pdf_str: str, db: Session = Depends(get_db)):
+# === nemnogo hard coding`a ===
     try:
         pdf_record = db.query(PDFFile).filter(PDFFile.filename == pdf_str).first()
         if not pdf_record:
@@ -300,6 +312,42 @@ def format_line(words):
     return line_text
 
 
+@app.post("/file/save", response_model=HTMLFileResponse)
+async def save_new_file(
+        file_data: HTMLFileCreate,
+        db: Session = Depends(get_db),
+):
+    try:
+        # Проверяем, что файл с таким именем не существует
+        existing_file = db.query(HTMLFile).filter(HTMLFile.filename == file_data.filename).first()
+        if existing_file:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File with this name already exists"
+            )
+
+        # Создаем новую запись
+        db_file = HTMLFile(
+            filename=file_data.filename,
+            content=file_data.content,
+            source_pdf_id=file_data.source_pdf_id,
+            upload_date=datetime.now(),
+            file_size=len(file_data.content.encode('utf-8')))
+
+        db.add(db_file)
+        db.commit()
+        db.refresh(db_file)
+
+        return db_file
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error saving file: {str(e)}"
+        )
+
+
 @app.get("/pdf/all", response_model=list[PDFResponse])
 async def get_all_pdf(db: Session = Depends(get_db)):
     pdfs = db.query(PDFFile).all()
@@ -322,7 +370,9 @@ async def delete_pdf(pdf_id: int, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-
+@app.get("/files/all", response_model=list[HTMLFileResponse])
+async def get_all_html_files(db: Session = Depends(get_db)):
+    return db.query(HTMLFile).all()
 
 if __name__ == "__main__":
     uvicorn.run(
